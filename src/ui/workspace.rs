@@ -20,6 +20,8 @@ pub(super) struct WorkspaceTab {
     pub(super) open_id: Option<String>,
     pub(super) response: Option<HttpResponse>,
     pub(super) in_flight: Option<task::Handle>,
+    pub(super) rename_draft: Option<String>,
+    pub(super) pending_name: Option<String>,
 }
 
 impl WorkspaceTab {
@@ -30,6 +32,8 @@ impl WorkspaceTab {
             open_id: None,
             response: None,
             in_flight: None,
+            rename_draft: None,
+            pending_name: None,
         }
     }
 
@@ -40,6 +44,7 @@ impl WorkspaceTab {
             && self.editor.url.trim().is_empty()
             && self.editor.body.text().trim().is_empty()
             && self.editor.headers.iter().all(|row| row.header.name.trim().is_empty())
+            && self.pending_name.is_none()
     }
 }
 
@@ -54,7 +59,6 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
     let editor_pane = container(
         scrollable(
             column![
-                view_request_bar(app),
                 view_headers_section(app),
                 view_body_section(app),
             ]
@@ -95,7 +99,7 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
             .into(),
     };
 
-    column![view_tab_bar(app), panes]
+    column![view_tab_bar(app), view_request_bar(app), panes]
         .width(Fill)
         .height(Fill)
         .spacing(4)
@@ -142,18 +146,19 @@ fn view_tab_bar(app: &App) -> Element<'_, Message> {
 
 fn tab_label(app: &App, tab: &WorkspaceTab) -> String {
     let label = match &tab.open_id {
-        Some(id) => app
-            .saved
-            .iter()
+        Some(id) => app.saved.iter()
             .find(|entry| &entry.id == id)
             .map(|entry| entry.name.clone())
             .unwrap_or_else(|| "New Request".to_owned()),
-        None => {
-            let url = tab.editor.url.trim();
-            if url.is_empty() {
-                "New request".to_owned()
-            } else {
-                format!("{} {}", tab.editor.method, url)
+        None => match &tab.pending_name {
+            Some(name) => name.clone(),
+            None => {
+                let url = tab.editor.url.trim();
+                if url.is_empty() {
+                    "New request".to_owned()
+                } else {
+                    format!("{} {}", tab.editor.method, url)
+                }
             }
         }
     };
@@ -177,37 +182,63 @@ fn view_request_bar(app: &App) -> Element<'_, Message> {
             .style(button::primary)
     };
 
-    let open_label = tab
-        .open_id
-        .as_ref()
-        .and_then(|id| app.saved.iter().find(|entry| entry.id == *id))
-        .map(|entry| format!("Editing: {}", entry.name));
+    let name_line = view_name_line(app, tab);
 
-    let mut bar = row![
-        pick_list(
+    let bar = column![
+        container(name_line)
+            .width(Fill)
+            .align_x(alignment::Horizontal::Left),
+        row![
+            pick_list(
             HttpMethod::ALL,
-            Some(tab.editor.method),
-            Message::MethodSelected,
-        )
-        .width(110),
-        text_input("https://api.example.com/path", &tab.editor.url)
-            .on_input(Message::UrlChanged)
-            .on_submit(Message::Send)
-            .size(UI_TEXT_SIZE),
-        send_button
-    ]
-    .spacing(8)
-    .align_y(Alignment::Center)
-    .width(Fill);
+                Some(tab.editor.method),
+                Message::MethodSelected,
+            )
+            .width(110),
+            text_input("https://api.example.com/path", &tab.editor.url)
+                .on_input(Message::UrlChanged)
+                .on_submit(Message::Send)
+                .size(UI_TEXT_SIZE),
+            send_button
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .width(Fill)
 
-    if let Some(label) = open_label {
-        bar = bar.push(
-            container(tinted_text(label, MUTED).size(UI_TEXT_SIZE))
-                .width(Fill)
-                .align_x(alignment::Horizontal::Right),
-        );
-    }
+    ];
+
     bar.into()
+}
+
+fn view_name_line<'a>(app: &'a App, tab: &'a WorkspaceTab) -> Element<'a, Message> {
+    let row = match &tab.rename_draft {
+        Some(draft) => row![
+            text_input("Request name", draft)
+                .size(UI_TEXT_SIZE)
+                .width(280)
+                .on_input(Message::RequestNameChanged)
+                .on_submit(Message::RequestRenameCommitted),
+            button(text("✓").size(UI_TEXT_SIZE))
+                .on_press(Message::RequestRenameCommitted)
+                .style(button::secondary),
+        ],
+        None => {
+            let name = tab.open_id.as_ref()
+                .and_then(|id| { app.saved.iter().find(|entry| entry.id == *id)})
+                .map(|entry| entry.name.clone())
+                .or_else(|| tab.pending_name.clone())
+                .or_else(|| Some(String::from("New Request")));
+            let mut row = row![tinted_text(name.unwrap_or_default(), MUTED).size(UI_TEXT_SIZE)];
+            row = row.push(
+                button(text("✎").size(UI_TEXT_SIZE_SM))
+                    .on_press(Message::RequestRenameStarted)
+                    .style(button::text)
+                    .padding([2, 4]),
+            );
+            row
+        }
+    };
+    row.spacing(6).align_y(Alignment::Center).into()
 }
 
 fn view_headers_section(app: &App) -> Element<'_, Message> {

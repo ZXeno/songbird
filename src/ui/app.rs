@@ -144,6 +144,13 @@ impl App {
                 }
             }
             Message::ImportSaveDeclined => self.import = None,
+            Message::RequestRenameStarted => return self.start_rename(),
+            Message::RequestNameChanged(name) => {
+                if let Some(draft) = self.active_tab_mut().rename_draft.as_mut() {
+                    *draft = name;
+                }
+            },
+            Message::RequestRenameCommitted => return self.commit_rename(),
         }
         Task::none()
     }
@@ -253,7 +260,6 @@ impl App {
         if let Some(id) = self.tabs[index].open_id.clone() {
             if let Some(existing) = self.saved.iter_mut().find(|entry| entry.id == id) {
                 existing.request = request;
-                existing.refresh_name();
                 let snapshot = existing.clone();
                 match self.storage.save(&snapshot) {
                     Ok(()) => {
@@ -264,7 +270,10 @@ impl App {
                 return;
             }
         }
-        let entry = SavedRequest::new(request);
+        let mut entry = SavedRequest::new(request);
+        if let Some(name) = self.tabs[index].pending_name.take() {
+            entry.rename(name);
+        }
         match self.storage.save(&entry) {
             Ok(()) => {
                 self.tabs[index].open_id = Some(entry.id.clone());
@@ -273,6 +282,49 @@ impl App {
             }
             Err(error) => self.notice = Some(Notice::Error(error.to_string())),
         }
+    }
+
+    fn start_rename(&mut self) -> Task<Message> {
+        if self.active_tab().rename_draft.is_some() {
+            return Task::none();
+        }
+        let tab = self.active_tab();
+        let current = tab.pending_name.clone().or_else(|| {
+            tab.open_id.as_ref()
+                .and_then(|id| self.saved.iter().find(|entry| entry.id == *id))
+                .map(|entry| entry.name.clone())
+        }).unwrap_or_default();
+        self.active_tab_mut().rename_draft = Some(current);
+        self.notice = None;
+        Task::none()
+    }
+
+    fn commit_rename(&mut self) -> Task<Message> {
+        let Some(draft) = self.active_tab_mut().rename_draft.take() else {
+            return Task::none();
+        };
+        let name = draft.trim().to_owned();
+        if name.is_empty() {
+            self.notice = Some(Notice::Error("Name cannot be empty".to_owned()));
+            return Task::none();
+        }
+        let open_id = self.active_tab_mut().open_id.clone();
+        match open_id {
+            // saved: write through to the entry and storage
+            Some(open_id) => {
+                if let Some(entry) = self.saved.iter_mut().find(|entry| entry.id == open_id) {
+                    entry.rename(name);
+                    let snapshot = entry.clone();
+                    match self.storage.save(&snapshot) {
+                        Ok(()) => self.notice = Some(Notice::Success("Request renamed".to_owned())),
+                        Err(error) => self.notice = Some(Notice::Error(error.to_string())),
+                    }
+                }
+            }
+            // unsaved: stage it until the first save
+            None => self.active_tab_mut().pending_name = Some(name),
+        }
+        Task::none()
     }
 
     fn open_saved(&mut self, id: &str) {

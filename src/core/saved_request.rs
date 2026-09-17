@@ -23,8 +23,8 @@ impl SavedRequest {
         }
     }
 
-    pub fn refresh_name(&mut self) {
-        self.name = derive_name(&self.request);
+    pub fn rename(&mut self, name: String) {
+        self.name = name;
     }
 }
 
